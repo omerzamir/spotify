@@ -7,11 +7,11 @@ import (
 	"os"
 	"text/tabwriter"
 
-	spotifyauth "github.com/zmb3/spotify/v2/auth"
+	spotifyauth "github.com/omerzamir/spotify/v2/auth"
 
 	"golang.org/x/oauth2/clientcredentials"
 
-	"github.com/zmb3/spotify/v2"
+	"github.com/omerzamir/spotify/v2"
 )
 
 func main() {
