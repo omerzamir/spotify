@@ -233,12 +233,17 @@ func (c *Client) execute(req *http.Request, result interface{}, needsStatus ...i
 	if c.acceptLanguage != "" {
 		req.Header.Set("Accept-Language", c.acceptLanguage)
 	}
-	for {
+	for attempt := 0; ; attempt++ {
+		if attempt > 0 {
+			if err := rewindBody(req); err != nil {
+				return err
+			}
+		}
+
 		resp, err := c.http.Do(req)
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close()
 
 		if c.autoRetry &&
 			isFailure(resp.StatusCode, needsStatus) &&
@@ -247,25 +252,49 @@ func (c *Client) execute(req *http.Request, result interface{}, needsStatus ...i
 			case <-req.Context().Done():
 				// If the context is cancelled, return the original error
 			case <-time.After(retryDuration(resp)):
+				resp.Body.Close()
 				continue
 			}
 		}
-		if resp.StatusCode == http.StatusNoContent {
-			return nil
-		}
-		if (resp.StatusCode >= 300 ||
-			resp.StatusCode < 200) &&
-			isFailure(resp.StatusCode, needsStatus) {
-			return decodeError(resp)
-		}
 
-		if result != nil {
-			if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
-				return err
-			}
-		}
-		break
+		err = decodeResponse(resp, result, needsStatus)
+		resp.Body.Close()
+		return err
 	}
+}
+
+// decodeResponse turns resp into an error or decodes its JSON body into
+// result (when result is non-nil).
+func decodeResponse(resp *http.Response, result interface{}, needsStatus []int) error {
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if (resp.StatusCode >= 300 ||
+		resp.StatusCode < 200) &&
+		isFailure(resp.StatusCode, needsStatus) {
+		return decodeError(resp)
+	}
+	if result != nil {
+		return json.NewDecoder(resp.Body).Decode(result)
+	}
+	return nil
+}
+
+// rewindBody resets req.Body so the request can be sent again. Requests
+// built by http.NewRequest from an in-memory reader can always be rewound;
+// without this, a retried request would be sent with an empty body.
+func rewindBody(req *http.Request) error {
+	if req.Body == nil || req.Body == http.NoBody {
+		return nil
+	}
+	if req.GetBody == nil {
+		return errors.New("spotify: cannot retry request: body is not rewindable")
+	}
+	body, err := req.GetBody()
+	if err != nil {
+		return fmt.Errorf("spotify: rewinding request body: %w", err)
+	}
+	req.Body = body
 	return nil
 }
 
@@ -302,6 +331,7 @@ func (c *Client) get(ctx context.Context, url string, result interface{}) error 
 			case <-ctx.Done():
 				// If the context is cancelled, return the original error
 			case <-time.After(retryDuration(resp)):
+				resp.Body.Close()
 				continue
 			}
 		}
