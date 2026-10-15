@@ -92,7 +92,8 @@ func (c *Client) FeaturedPlaylists(ctx context.Context, opts ...RequestOption) (
 // must have granted the [ScopePlaylistModifyPrivate] scope.  The
 // [ScopePlaylistModifyPublic] scope is required to follow playlists publicly.
 //
-// Deprecated: Use [Client.AddItemsToLibrary].
+// Deprecated: Use [Client.AddItemsToLibrary] with a spotify:playlist:<id> URI.
+// The replacement has no public/private flag, so the public argument has no equivalent.
 //
 // [adds the current user as a follower]: https://developer.spotify.com/documentation/web-api/reference/follow-playlist
 func (c *Client) FollowPlaylist(ctx context.Context, playlist ID, public bool) error {
@@ -110,7 +111,7 @@ func (c *Client) FollowPlaylist(ctx context.Context, playlist ID, public bool) e
 // Unfollowing a publicly followed playlist requires [ScopePlaylistModifyPublic].
 // Unfolowing a privately followed playlist requies [ScopePlaylistModifyPrivate].
 //
-// Deprecated: Use [Client.RemoveItemsFromLibrary].
+// Deprecated: Use [Client.RemoveItemsFromLibrary] with a spotify:playlist:<id> URI.
 //
 // [removes the current user as a follower of a playlist]: https://developer.spotify.com/documentation/web-api/reference/unfollow-playlist
 func (c *Client) UnfollowPlaylist(ctx context.Context, playlist ID) error {
@@ -139,7 +140,8 @@ func buildFollowURI(url string, playlist ID) string {
 //
 // Supported options: [Limit], [Offset].
 //
-// Deprecated: Use [Client.CurrentUsersPlaylists].
+// Deprecated: Use [Client.CurrentUsersPlaylists]. The replacement only lists the
+// current user's playlists, not those of arbitrary users.
 //
 // [gets a list of the playlists]: https://developer.spotify.com/documentation/web-api/reference/get-list-users-playlists
 func (c *Client) GetPlaylistsForUser(ctx context.Context, userID string, opts ...RequestOption) (*SimplePlaylistPage, error) {
@@ -270,7 +272,9 @@ func (c *Client) GetPlaylist(ctx context.Context, playlistID ID, opts ...Request
 //
 // Deprecated: Spotify removed this endpoint for Development Mode apps created
 // after February 2026 and is moving to items that may be tracks or episodes.
-// Use [Client.GetPlaylistItems].
+// Use [Client.GetPlaylistItems]. That only works for playlists the current user
+// owns or collaborates on: there is no replacement endpoint for reading the
+// contents of other playlists.
 func (c *Client) GetPlaylistTracks(
 	ctx context.Context,
 	playlistID ID,
@@ -795,7 +799,8 @@ func (c *Client) ReplacePlaylistItems(ctx context.Context, playlistID ID, items 
 // Checking if the user is privately following a playlist is only possible for the
 // current user when that user has granted access to the [ScopePlaylistReadPrivate] scope.
 //
-// Deprecated: Use [Client.UserHasLibraryItems].
+// Deprecated: Use [Client.UserHasLibraryItems] with a spotify:playlist:<id> URI.
+// The replacement only checks the current user, not arbitrary users.
 //
 // [checks if one or more (up to 5) users are following]: https://developer.spotify.com/documentation/web-api/reference/check-if-user-follows-playlist
 func (c *Client) UserFollowsPlaylist(ctx context.Context, playlistID ID, userIDs ...string) ([]bool, error) {

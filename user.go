@@ -150,7 +150,7 @@ func (c *Client) CurrentUsersTracks(ctx context.Context, opts ...RequestOption) 
 // Modifying the lists of artists or users the current user follows
 // requires that the application has the [ScopeUserFollowModify] scope.
 //
-// Deprecated: Use [Client.AddItemsToLibrary].
+// Deprecated: Use [Client.AddItemsToLibrary] with spotify:user:<id> URIs.
 //
 // [adds the current user as a follower]: https://developer.spotify.com/documentation/web-api/reference/follow-artists-users
 // [Spotify ID]: https://developer.spotify.com/documentation/web-api/#spotify-uris-and-ids
@@ -164,7 +164,9 @@ func (c *Client) FollowUser(ctx context.Context, ids ...ID) error {
 // Modifying the lists of artists or users the current user follows
 // requires that the application has the [ScopeUserFollowModify] scope.
 //
-// Deprecated: Use [Client.AddItemsToLibrary].
+// Deprecated: There is no replacement yet:
+// [Client.AddItemsToLibrary] and [Client.RemoveItemsFromLibrary] do not accept
+// spotify:artist:<id> URIs.
 //
 // [adds the current user as a follower]: https://developer.spotify.com/documentation/web-api/reference/follow-artists-users
 // [Spotify ID]: https://developer.spotify.com/documentation/web-api/#spotify-uris-and-ids
@@ -178,7 +180,7 @@ func (c *Client) FollowArtist(ctx context.Context, ids ...ID) error {
 // Modifying the lists of artists or users the current user follows
 // requires that the application has the [ScopeUserFollowModify] scope.
 //
-// Deprecated: Use [Client.RemoveItemsFromLibrary].
+// Deprecated: Use [Client.RemoveItemsFromLibrary] with spotify:user:<id> URIs.
 //
 // [removes the current user as a follower]: https://developer.spotify.com/documentation/web-api/reference/unfollow-artists-users
 func (c *Client) UnfollowUser(ctx context.Context, ids ...ID) error {
@@ -191,7 +193,9 @@ func (c *Client) UnfollowUser(ctx context.Context, ids ...ID) error {
 // Modifying the lists of artists or users the current user follows
 // requires that the application has the [ScopeUserFollowModify] scope.
 //
-// Deprecated: Use [Client.RemoveItemsFromLibrary].
+// Deprecated: There is no replacement yet:
+// [Client.AddItemsToLibrary] and [Client.RemoveItemsFromLibrary] do not accept
+// spotify:artist:<id> URIs.
 //
 // [removes the current user as a follower]: https://developer.spotify.com/documentation/web-api/reference/unfollow-artists-users
 func (c *Client) UnfollowArtist(ctx context.Context, ids ...ID) error {
@@ -208,7 +212,7 @@ func (c *Client) UnfollowArtist(ctx context.Context, ids ...ID) error {
 // The result is returned as a slice of bool values in the same order
 // in which the IDs were specified.
 //
-// Deprecated: Use [Client.UserHasLibraryItems].
+// Deprecated: Use [Client.UserHasLibraryItems] with spotify:user:<id> or spotify:artist:<id> URIs.
 //
 // [checks to see if the current user is following]: https://developer.spotify.com/documentation/web-api/reference/check-current-user-follows
 func (c *Client) CurrentUserFollows(ctx context.Context, t string, ids ...ID) ([]bool, error) {

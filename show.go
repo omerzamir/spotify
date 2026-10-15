@@ -220,7 +220,7 @@ func (c *Client) GetShowEpisodes(ctx context.Context, id string, opts ...Request
 
 // SaveShowsForCurrentUser [saves one or more shows] to current Spotify user's library.
 //
-// Deprecated: Use [Client.AddItemsToLibrary].
+// Deprecated: Use [Client.AddItemsToLibrary] with spotify:show:<id> URIs.
 //
 // [saves one or more shows]: https://developer.spotify.com/documentation/web-api/reference/save-shows-user
 func (c *Client) SaveShowsForCurrentUser(ctx context.Context, ids []ID) error {

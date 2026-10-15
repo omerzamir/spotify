@@ -11,20 +11,32 @@ Spotify
 >   `AddItemsToPlaylist`, `RemoveItemsFromPlaylist(Opt)`, `ReplacePlaylistItems`,
 >   `ReorderPlaylistItems` (`/playlists/{id}/items`), and `AddItemsToLibrary`,
 >   `RemoveItemsFromLibrary`, `UserHasLibraryItems` (`/me/library`, URIs, 40 per call).
->   The methods they replace still work and are marked deprecated.
+>   The methods they replace remain available and are marked deprecated, but
+>   Spotify has removed their endpoints for Development Mode apps created after
+>   February 2026.
 > - `GetPlaylistItems` uses `/playlists/{id}/items`, which Spotify only serves for
 >   playlists you own or collaborate on; the deprecated `GetPlaylistTracks` still
 >   reads other playlists while Spotify serves `/tracks` to your app.
-> - Playlist responses decode both the new `item`/`items` keys and the legacy
->   `track`/`tracks` keys into the existing `Track`/`Tracks` fields.
+> - `PlaylistItem`, `PlaylistTrack`, `FullPlaylist` and `SimplePlaylist` decode both
+>   the new `item`/`items` keys and the legacy `track`/`tracks` keys into the
+>   existing `Track`/`Tracks` fields.
 > - Retried writes (`WithRetry`) re-send their request body.
-> - Requires Go 1.26 or newer.
+>
+> Behaviour changes in `v2.5.0`:
+>
+> - Go 1.26 or newer is required (it was 1.16).
+> - `GetPlaylistItems` now uses `/playlists/{id}/items`, which answers 403 for
+>   playlists you neither own nor collaborate on; use `GetPlaylistTracks` for those.
+> - `RemoveItemsFromPlaylist(Opt)` and `RemoveTracksFromPlaylist(Opt)` return an
+>   error locally, without sending a request, when called with nothing to remove.
+> - `TrackToRemove.Positions` is omitted from the request when empty, which means
+>   all occurrences are removed.
 >
 > To migrate, replace the import path `github.com/zmb3/spotify/v2` with
 > `github.com/omerzamir/spotify/v2`. The endpoint migration builds on
 > [zmb3/spotify#299](https://github.com/zmb3/spotify/pull/299) by @Vitalick.
 
-[![GoDoc](https://pkg.go.dev/github.com/omerzamir/spotify/v2?status.svg)](http://pkg.go.dev/github.com/omerzamir/spotify/v2)
+[![Go Reference](https://pkg.go.dev/badge/github.com/omerzamir/spotify/v2.svg)](https://pkg.go.dev/github.com/omerzamir/spotify/v2)
 
 This is a Go wrapper for working with Spotify's
 [Web API](https://developer.spotify.com/web-api/).
