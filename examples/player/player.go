@@ -117,6 +117,6 @@ func completeAuth(w http.ResponseWriter, r *http.Request) {
 	// use the token to get an authenticated client
 	client := spotify.New(auth.Client(r.Context(), tok))
 	w.Header().Set("Content-Type", "text/html")
-	fmt.Fprintf(w, "Login Completed!"+html)
+	fmt.Fprint(w, "Login Completed!"+html)
 	ch <- client
 }
