@@ -427,65 +427,20 @@ func (c *Client) modifyPlaylist(ctx context.Context, playlistID ID, newName, new
 //
 // [adds one or more tracks to a user's playlist]: https://developer.spotify.com/documentation/web-api/reference/add-tracks-to-playlist
 func (c *Client) AddTracksToPlaylist(ctx context.Context, playlistID ID, trackIDs ...ID) (snapshotID string, err error) {
-	uris := make([]string, len(trackIDs))
+	uris := make([]URI, len(trackIDs))
 	for i, id := range trackIDs {
-		uris[i] = fmt.Sprintf("spotify:track:%s", id)
-	}
-	m := make(map[string]interface{})
-	m["uris"] = uris
-
-	spotifyURL := fmt.Sprintf("%splaylists/%s/tracks",
-		c.baseURL, string(playlistID))
-	body, err := json.Marshal(m)
-	if err != nil {
-		return "", err
-	}
-	req, err := http.NewRequestWithContext(ctx, "POST", spotifyURL, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	result := struct {
-		SnapshotID string `json:"snapshot_id"`
-	}{}
-
-	err = c.execute(req, &result, http.StatusCreated)
-	if err != nil {
-		return "", err
+		uris[i] = URI("spotify:track:" + string(id))
 	}
 
-	return result.SnapshotID, nil
+	spotifyURL := fmt.Sprintf("%splaylists/%s/tracks", c.baseURL, string(playlistID))
+	return sendPlaylistEdit(ctx, c, http.MethodPost, spotifyURL, playlistURIs{URIs: uris}, http.StatusCreated)
 }
 
 // AddItemsToPlaylist adds one or more items to a user's playlist. Track and
 // episode URIs are supported.
 func (c *Client) AddItemsToPlaylist(ctx context.Context, playlistID ID, items ...URI) (snapshotID string, err error) {
-	m := make(map[string]interface{})
-	m["uris"] = items
-
-	spotifyURL := fmt.Sprintf("%splaylists/%s/items",
-		c.baseURL, string(playlistID))
-	body, err := json.Marshal(m)
-	if err != nil {
-		return "", err
-	}
-	req, err := http.NewRequestWithContext(ctx, "POST", spotifyURL, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	result := struct {
-		SnapshotID string `json:"snapshot_id"`
-	}{}
-
-	err = c.execute(req, &result, http.StatusCreated)
-	if err != nil {
-		return "", err
-	}
-
-	return result.SnapshotID, nil
+	spotifyURL := fmt.Sprintf("%splaylists/%s/items", c.baseURL, string(playlistID))
+	return sendPlaylistEdit(ctx, c, http.MethodPost, spotifyURL, playlistURIs{URIs: items}, http.StatusCreated)
 }
 
 // RemoveTracksFromPlaylist [removes one or more tracks from a user's playlist].
@@ -500,26 +455,20 @@ func (c *Client) AddItemsToPlaylist(ctx context.Context, playlistID ID, items ..
 //
 // [removes one or more tracks from a user's playlist]: https://developer.spotify.com/documentation/web-api/reference/remove-tracks-playlist
 func (c *Client) RemoveTracksFromPlaylist(ctx context.Context, playlistID ID, trackIDs ...ID) (newSnapshotID string, err error) {
-	tracks := make([]struct {
-		URI string `json:"uri"`
-	}, len(trackIDs))
-
-	for i, u := range trackIDs {
-		tracks[i].URI = fmt.Sprintf("spotify:track:%s", u)
+	tracks := make([]TrackToRemove, len(trackIDs))
+	for i, id := range trackIDs {
+		tracks[i].URI = "spotify:track:" + string(id)
 	}
 	return c.removeTracksFromPlaylist(ctx, playlistID, tracks, "")
 }
 
 // RemoveItemsFromPlaylist removes one or more items from a user's playlist.
 func (c *Client) RemoveItemsFromPlaylist(ctx context.Context, playlistID ID, items ...URI) (newSnapshotID string, err error) {
-	tracks := make([]struct {
-		URI string `json:"uri"`
-	}, len(items))
-
-	for i, u := range items {
-		tracks[i].URI = string(u)
+	toRemove := make([]ItemToRemove, len(items))
+	for i, uri := range items {
+		toRemove[i].URI = string(uri)
 	}
-	return c.removeItemsFromPlaylist(ctx, playlistID, tracks, "")
+	return c.removeItemsFromPlaylist(ctx, playlistID, toRemove, "")
 }
 
 // TrackToRemove specifies a track to be removed from a playlist.
@@ -527,7 +476,7 @@ func (c *Client) RemoveItemsFromPlaylist(ctx context.Context, playlistID ID, ite
 // TrackToRemove is used with RemoveTracksFromPlaylistOpt.
 type TrackToRemove struct {
 	URI       string `json:"uri"`
-	Positions []int  `json:"positions"`
+	Positions []int  `json:"positions,omitempty"`
 }
 
 // NewTrackToRemove returns a [TrackToRemove] with the specified
@@ -588,73 +537,68 @@ func (c *Client) RemoveItemsFromPlaylistOpt(
 func (c *Client) removeTracksFromPlaylist(
 	ctx context.Context,
 	playlistID ID,
-	tracks interface{},
+	tracks []TrackToRemove,
 	snapshotID string,
 ) (newSnapshotID string, err error) {
-	m := make(map[string]interface{})
-	m["tracks"] = tracks
-	if snapshotID != "" {
-		m["snapshot_id"] = snapshotID
-	}
-
-	spotifyURL := fmt.Sprintf("%splaylists/%s/tracks",
-		c.baseURL, string(playlistID))
-	body, err := json.Marshal(m)
-	if err != nil {
-		return "", err
-	}
-	req, err := http.NewRequestWithContext(ctx, "DELETE", spotifyURL, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	result := struct {
-		SnapshotID string `json:"snapshot_id"`
-	}{}
-
-	err = c.execute(req, &result)
-	if err != nil {
-		return "", err
-	}
-
-	return result.SnapshotID, err
+	spotifyURL := fmt.Sprintf("%splaylists/%s/tracks", c.baseURL, string(playlistID))
+	return sendPlaylistEdit(ctx, c, http.MethodDelete, spotifyURL, playlistRemoval{Tracks: tracks, SnapshotID: snapshotID})
 }
 
 func (c *Client) removeItemsFromPlaylist(
 	ctx context.Context,
 	playlistID ID,
-	items interface{},
+	items []ItemToRemove,
 	snapshotID string,
 ) (newSnapshotID string, err error) {
-	m := make(map[string]interface{})
-	m["items"] = items
-	if snapshotID != "" {
-		m["snapshot_id"] = snapshotID
-	}
+	spotifyURL := fmt.Sprintf("%splaylists/%s/items", c.baseURL, string(playlistID))
+	return sendPlaylistEdit(ctx, c, http.MethodDelete, spotifyURL, playlistRemoval{Items: items, SnapshotID: snapshotID})
+}
 
-	spotifyURL := fmt.Sprintf("%splaylists/%s/items",
-		c.baseURL, string(playlistID))
-	body, err := json.Marshal(m)
+// playlistSnapshot is the response body of endpoints that modify a playlist.
+type playlistSnapshot struct {
+	SnapshotID string `json:"snapshot_id"`
+}
+
+// playlistURIs is the request body of endpoints that take a list of URIs.
+type playlistURIs struct {
+	URIs []URI `json:"uris"`
+}
+
+// playlistRemoval is the request body of the remove endpoints. The legacy
+// /tracks endpoint names the list "tracks"; the /items endpoint names it
+// "items".
+type playlistRemoval struct {
+	Tracks     []TrackToRemove `json:"tracks,omitempty"`
+	Items      []ItemToRemove  `json:"items,omitempty"`
+	SnapshotID string          `json:"snapshot_id,omitempty"`
+}
+
+// sendPlaylistEdit sends body as JSON to a playlist endpoint and returns the
+// playlist's new snapshot ID.
+func sendPlaylistEdit[B playlistURIs | playlistRemoval](
+	ctx context.Context,
+	c *Client,
+	method, spotifyURL string,
+	body B,
+	needsStatus ...int,
+) (string, error) {
+	bodyJSON, err := json.Marshal(body)
 	if err != nil {
 		return "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, "DELETE", spotifyURL, bytes.NewReader(body))
+
+	req, err := http.NewRequestWithContext(ctx, method, spotifyURL, bytes.NewReader(bodyJSON))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	result := struct {
-		SnapshotID string `json:"snapshot_id"`
-	}{}
-
-	err = c.execute(req, &result)
-	if err != nil {
+	var result playlistSnapshot
+	if err := c.execute(req, &result, needsStatus...); err != nil {
 		return "", err
 	}
 
-	return result.SnapshotID, err
+	return result.SnapshotID, nil
 }
 
 // ReplacePlaylistTracks [replaces all of the tracks in a playlist], overwriting its
@@ -698,31 +642,8 @@ func (c *Client) ReplacePlaylistTracks(ctx context.Context, playlistID ID, track
 //
 // [replaces all the items in a playlist]: https://developer.spotify.com/documentation/web-api/reference/reorder-or-replace-playlists-items
 func (c *Client) ReplacePlaylistItems(ctx context.Context, playlistID ID, items ...URI) (string, error) {
-	m := make(map[string]interface{})
-	m["uris"] = items
-
-	body, err := json.Marshal(m)
-	if err != nil {
-		return "", err
-	}
-
 	spotifyURL := fmt.Sprintf("%splaylists/%s/items", c.baseURL, playlistID)
-	req, err := http.NewRequestWithContext(ctx, "PUT", spotifyURL, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	result := struct {
-		SnapshotID string `json:"snapshot_id"`
-	}{}
-
-	err = c.execute(req, &result, http.StatusCreated)
-	if err != nil {
-		return "", err
-	}
-
-	return result.SnapshotID, nil
+	return sendPlaylistEdit(ctx, c, http.MethodPut, spotifyURL, playlistURIs{URIs: items}, http.StatusCreated)
 }
 
 // UserFollowsPlaylist [checks if one or more (up to 5) users are following]
