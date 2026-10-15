@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -562,7 +563,7 @@ func (c *Client) AddTracksToPlaylist(ctx context.Context, playlistID ID, trackID
 // episode URIs are supported.
 func (c *Client) AddItemsToPlaylist(ctx context.Context, playlistID ID, items ...URI) (snapshotID string, err error) {
 	spotifyURL := fmt.Sprintf("%splaylists/%s/items", c.baseURL, string(playlistID))
-	return sendPlaylistEdit(ctx, c, http.MethodPost, spotifyURL, playlistURIs{URIs: items}, http.StatusCreated)
+	return sendPlaylistEdit(ctx, c, http.MethodPost, spotifyURL, playlistURIs{URIs: nonNilURIs(items)}, http.StatusCreated)
 }
 
 // RemoveTracksFromPlaylist [removes one or more tracks from a user's playlist].
@@ -585,6 +586,7 @@ func (c *Client) RemoveTracksFromPlaylist(ctx context.Context, playlistID ID, tr
 }
 
 // RemoveItemsFromPlaylist removes one or more items from a user's playlist.
+// It returns an error without sending a request when items is empty.
 func (c *Client) RemoveItemsFromPlaylist(ctx context.Context, playlistID ID, items ...URI) (newSnapshotID string, err error) {
 	toRemove := make([]ItemToRemove, len(items))
 	for i, uri := range items {
@@ -662,6 +664,10 @@ func (c *Client) removeTracksFromPlaylist(
 	tracks []TrackToRemove,
 	snapshotID string,
 ) (newSnapshotID string, err error) {
+	if len(tracks) == 0 {
+		return "", errors.New("spotify: no tracks to remove")
+	}
+
 	spotifyURL := fmt.Sprintf("%splaylists/%s/tracks", c.baseURL, string(playlistID))
 	return sendPlaylistEdit(ctx, c, http.MethodDelete, spotifyURL, playlistRemoval{Tracks: tracks, SnapshotID: snapshotID})
 }
@@ -672,6 +678,10 @@ func (c *Client) removeItemsFromPlaylist(
 	items []ItemToRemove,
 	snapshotID string,
 ) (newSnapshotID string, err error) {
+	if len(items) == 0 {
+		return "", errors.New("spotify: no items to remove")
+	}
+
 	spotifyURL := fmt.Sprintf("%splaylists/%s/items", c.baseURL, string(playlistID))
 	return sendPlaylistEdit(ctx, c, http.MethodDelete, spotifyURL, playlistRemoval{Items: items, SnapshotID: snapshotID})
 }
@@ -684,6 +694,16 @@ type playlistSnapshot struct {
 // playlistURIs is the request body of endpoints that take a list of URIs.
 type playlistURIs struct {
 	URIs []URI `json:"uris"`
+}
+
+// nonNilURIs returns uris, or an empty non-nil slice when uris is nil, so that
+// it is encoded as [] rather than null.
+func nonNilURIs(uris []URI) []URI {
+	if uris == nil {
+		return []URI{}
+	}
+
+	return uris
 }
 
 // playlistRemoval is the request body of the remove endpoints. The legacy
@@ -760,12 +780,12 @@ func (c *Client) ReplacePlaylistTracks(ctx context.Context, playlistID ID, track
 // [ScopePlaylistModifyPrivate] scope.
 //
 // A maximum of 100 items is permitted in this call.  Additional items must be
-// added via [AddItemsToPlaylist].
+// added via [AddItemsToPlaylist]. Calling it without items clears the playlist.
 //
 // [replaces all the items in a playlist]: https://developer.spotify.com/documentation/web-api/reference/reorder-or-replace-playlists-items
 func (c *Client) ReplacePlaylistItems(ctx context.Context, playlistID ID, items ...URI) (string, error) {
 	spotifyURL := fmt.Sprintf("%splaylists/%s/items", c.baseURL, playlistID)
-	return sendPlaylistEdit(ctx, c, http.MethodPut, spotifyURL, playlistURIs{URIs: items}, http.StatusCreated)
+	return sendPlaylistEdit(ctx, c, http.MethodPut, spotifyURL, playlistURIs{URIs: nonNilURIs(items)}, http.StatusCreated)
 }
 
 // UserFollowsPlaylist [checks if one or more (up to 5) users are following]
@@ -830,16 +850,24 @@ type PlaylistReorderOptions struct {
 // Reordering tracks in the user's private playlists (including collaborative playlists) requires
 // [ScopePlaylistModifyPrivate].
 //
+// ReorderPlaylistTracks uses the legacy /playlists/{id}/tracks endpoint.
+//
 // Deprecated: Use [Client.ReorderPlaylistItems].
 func (c *Client) ReorderPlaylistTracks(ctx context.Context, playlistID ID, opt PlaylistReorderOptions) (snapshotID string, err error) {
-	return c.ReorderPlaylistItems(ctx, playlistID, opt)
+	return c.reorderPlaylist(ctx, playlistID, "tracks", opt)
 }
 
 // ReorderPlaylistItems reorders an item or group of items in a playlist.  It
 // returns a snapshot ID that can be used to identify the (newly modified)
 // playlist version in future requests.
 func (c *Client) ReorderPlaylistItems(ctx context.Context, playlistID ID, opt PlaylistReorderOptions) (snapshotID string, err error) {
-	spotifyURL := fmt.Sprintf("%splaylists/%s/items", c.baseURL, playlistID)
+	return c.reorderPlaylist(ctx, playlistID, "items", opt)
+}
+
+// reorderPlaylist sends opt to playlists/{id}/{endpoint}, where endpoint is
+// "items" or the legacy "tracks".
+func (c *Client) reorderPlaylist(ctx context.Context, playlistID ID, endpoint string, opt PlaylistReorderOptions) (string, error) {
+	spotifyURL := fmt.Sprintf("%splaylists/%s/%s", c.baseURL, playlistID, endpoint)
 	j, err := json.Marshal(opt)
 	if err != nil {
 		return "", err
@@ -850,11 +878,8 @@ func (c *Client) ReorderPlaylistItems(ctx context.Context, playlistID ID, opt Pl
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	result := struct {
-		SnapshotID string `json:"snapshot_id"`
-	}{}
-	err = c.execute(req, &result)
-	if err != nil {
+	var result playlistSnapshot
+	if err := c.execute(req, &result); err != nil {
 		return "", err
 	}
 
