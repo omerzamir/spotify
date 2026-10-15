@@ -2,6 +2,7 @@ package spotify
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -111,6 +112,29 @@ type PlaylistTrack struct {
 	IsLocal bool `json:"is_local"`
 	// Information about the track.
 	Track FullTrack `json:"track"`
+}
+
+// UnmarshalJSON decodes a playlist track. Since February 2026 Spotify returns
+// the track under "item" and keeps "track" as a deprecated alias; older
+// responses only have "track". "item" wins when both are present.
+func (t *PlaylistTrack) UnmarshalJSON(b []byte) error {
+	type playlistTrack PlaylistTrack // no methods, so no recursion
+
+	var raw struct {
+		playlistTrack
+		Item *FullTrack `json:"item"`
+	}
+
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+
+	*t = PlaylistTrack(raw.playlistTrack)
+	if raw.Item != nil {
+		t.Track = *raw.Item
+	}
+
+	return nil
 }
 
 // SavedTrack provides info about a track saved to a user's account.

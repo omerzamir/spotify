@@ -157,6 +157,29 @@ func (c *Client) GetPlaylistsForUser(ctx context.Context, userID string, opts ..
 	return &result, err
 }
 
+// UnmarshalJSON decodes a full playlist. Since February 2026 Spotify returns
+// the playlist's contents under "items" instead of "tracks"; they are exposed
+// as Tracks either way, and "items" wins when both are present.
+func (p *FullPlaylist) UnmarshalJSON(b []byte) error {
+	type fullPlaylist FullPlaylist // no methods, so no recursion
+
+	var raw struct {
+		fullPlaylist
+		Items *PlaylistTrackPage `json:"items"`
+	}
+
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+
+	*p = FullPlaylist(raw.fullPlaylist)
+	if raw.Items != nil {
+		p.Tracks = *raw.Items
+	}
+
+	return nil
+}
+
 // GetPlaylist [fetches a playlist] from spotify.
 //
 // Supported options: [Fields].
@@ -183,8 +206,14 @@ func (c *Client) GetPlaylist(ctx context.Context, playlistID ID, opts ...Request
 //
 // Supported options: [Limit], [Offset], [Market], [Fields].
 //
-// Deprecated: the Spotify api is moving towards supporting both tracks and episodes. Use [GetPlaylistItems] which
-// supports these.
+// GetPlaylistTracks uses the legacy /playlists/{id}/tracks endpoint. Unlike
+// [Client.GetPlaylistItems], which uses /playlists/{id}/items, it can read
+// playlists the current user neither owns nor collaborates on, for as long
+// as Spotify keeps serving it to your app.
+//
+// Deprecated: Spotify removed this endpoint for Development Mode apps created
+// after February 2026 and is moving to items that may be tracks or episodes.
+// Use [Client.GetPlaylistItems].
 func (c *Client) GetPlaylistTracks(
 	ctx context.Context,
 	playlistID ID,
@@ -219,6 +248,30 @@ type PlaylistItem struct {
 	IsLocal bool `json:"is_local"`
 	// Information about the track.
 	Track PlaylistItemTrack `json:"track"`
+}
+
+// UnmarshalJSON decodes a playlist item. Since February 2026 Spotify returns
+// the content under "item" and keeps "track" as a deprecated alias; older
+// responses only have "track". The content is exposed as Track either way,
+// and "item" wins when both are present.
+func (i *PlaylistItem) UnmarshalJSON(b []byte) error {
+	type playlistItem PlaylistItem // no methods, so no recursion
+
+	var raw struct {
+		playlistItem
+		Item *PlaylistItemTrack `json:"item"`
+	}
+
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+
+	*i = PlaylistItem(raw.playlistItem)
+	if raw.Item != nil {
+		i.Track = *raw.Item
+	}
+
+	return nil
 }
 
 // PlaylistItemTrack is a union type for both tracks and episodes. If both
@@ -265,6 +318,9 @@ type PlaylistItemPage struct {
 
 // GetPlaylistItems [gets full details of the items in a playlist], given the
 // playlist's [Spotify ID].
+//
+// Spotify only returns the items of playlists the current user owns or
+// collaborates on; other playlists fail with 403 Forbidden.
 //
 // Supported options: [Limit], [Offset], [Market], [Fields].
 //
