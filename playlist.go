@@ -157,27 +157,83 @@ func (c *Client) GetPlaylistsForUser(ctx context.Context, userID string, opts ..
 	return &result, err
 }
 
-// UnmarshalJSON decodes a full playlist. Since February 2026 Spotify returns
-// the playlist's contents under "items" instead of "tracks"; they are exposed
-// as Tracks either way, and "items" wins when both are present.
-func (p *FullPlaylist) UnmarshalJSON(b []byte) error {
-	type fullPlaylist FullPlaylist // no methods, so no recursion
+// UnmarshalJSON decodes a simplified playlist. Since February 2026 Spotify
+// returns the playlist's contents summary ({href,total}) under "items" instead
+// of "tracks"; it is exposed as Tracks either way, and "items" wins when both
+// are present.
+//
+// The simplePlaylist type is defined without methods, so decoding into it
+// cannot recurse. This relies on SimplePlaylist having no embedded types that
+// implement json.Unmarshaler; if one is ever added, its UnmarshalJSON would be
+// promoted and swallow the whole decode.
+func (p *SimplePlaylist) UnmarshalJSON(b []byte) error {
+	type simplePlaylist SimplePlaylist // no methods, so no recursion
 
 	var raw struct {
-		fullPlaylist
-		Items *PlaylistTrackPage `json:"items"`
+		simplePlaylist
+		Items *PlaylistTracks `json:"items"`
 	}
 
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return err
 	}
 
-	*p = FullPlaylist(raw.fullPlaylist)
+	*p = SimplePlaylist(raw.simplePlaylist)
 	if raw.Items != nil {
 		p.Tracks = *raw.Items
 	}
 
 	return nil
+}
+
+// UnmarshalJSON decodes a full playlist. Since February 2026 Spotify returns
+// the playlist's contents under "items" instead of "tracks"; they are exposed
+// as Tracks either way, and "items" wins when both are present.
+//
+// The embedded SimplePlaylist has its own UnmarshalJSON, which would be
+// promoted to FullPlaylist and ignore the extra fields if the usual
+// alias-embedding trick were used here. Instead the document is decoded in
+// separate passes: once into the SimplePlaylist, then once into the
+// fields that only a full playlist has.
+func (p *FullPlaylist) UnmarshalJSON(b []byte) error {
+	var simple SimplePlaylist
+	if err := json.Unmarshal(b, &simple); err != nil {
+		return err
+	}
+
+	var extra struct {
+		Followers Followers       `json:"followers"`
+		Tracks    json.RawMessage `json:"tracks"`
+		Items     json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(b, &extra); err != nil {
+		return err
+	}
+
+	full := FullPlaylist{SimplePlaylist: simple, Followers: extra.Followers}
+
+	switch {
+	case hasJSONValue(extra.Items):
+		if err := json.Unmarshal(extra.Items, &full.Tracks); err != nil {
+			return err
+		}
+	case hasJSONValue(extra.Tracks):
+		if err := json.Unmarshal(extra.Tracks, &full.Tracks); err != nil {
+			return err
+		}
+	}
+
+	*p = full
+
+	return nil
+}
+
+// hasJSONValue reports whether raw holds a JSON value other than null, i.e.
+// whether the key was present in the document and carried a value.
+func hasJSONValue(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+
+	return len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null"))
 }
 
 // GetPlaylist [fetches a playlist] from spotify.
@@ -252,14 +308,19 @@ type PlaylistItem struct {
 
 // UnmarshalJSON decodes a playlist item. Since February 2026 Spotify returns
 // the content under "item" and keeps "track" as a deprecated alias; older
-// responses only have "track". The content is exposed as Track either way,
-// and "item" wins when both are present.
+// responses only have "track". The content is exposed as Track either way.
+// "item" wins when it is present and not null; "track" is then not decoded at
+// all, so a malformed or partial alias cannot fail the page.
 func (i *PlaylistItem) UnmarshalJSON(b []byte) error {
 	type playlistItem PlaylistItem // no methods, so no recursion
 
+	// Track and Item sit at the outer level so they shadow the embedded
+	// playlistItem.Track: encoding/json prefers the least nested field for a
+	// given key, which keeps the embedded one from decoding "track" itself.
 	var raw struct {
 		playlistItem
-		Item *PlaylistItemTrack `json:"item"`
+		Track json.RawMessage `json:"track"`
+		Item  json.RawMessage `json:"item"`
 	}
 
 	if err := json.Unmarshal(b, &raw); err != nil {
@@ -267,8 +328,13 @@ func (i *PlaylistItem) UnmarshalJSON(b []byte) error {
 	}
 
 	*i = PlaylistItem(raw.playlistItem)
-	if raw.Item != nil {
-		i.Track = *raw.Item
+	i.Track = PlaylistItemTrack{}
+
+	switch {
+	case hasJSONValue(raw.Item):
+		return json.Unmarshal(raw.Item, &i.Track)
+	case hasJSONValue(raw.Track):
+		return json.Unmarshal(raw.Track, &i.Track)
 	}
 
 	return nil
