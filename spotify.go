@@ -169,35 +169,28 @@ func decodeError(resp *http.Response) error {
 	if err != nil {
 		return err
 	}
+
+	var e struct {
+		E Error `json:"error"`
+	}
+
+	e.E = Error{
+		Message: "server response without body",
+	}
+
 	if ctHeader := resp.Header.Get("Content-Type"); ctHeader == "" {
 		msg := string(responseBody)
 		if len(msg) == 0 {
 			msg = http.StatusText(resp.StatusCode)
 		}
+		e.E.Message = msg
+	} else if len(responseBody) != 0 {
+		buf := bytes.NewBuffer(responseBody)
 
-		return Error{
-			Message: msg,
-			Status:  resp.StatusCode,
-		}
-	}
-
-	if len(responseBody) == 0 {
-		return Error{
-			Message: "server response without body",
-			Status:  resp.StatusCode,
-		}
-	}
-
-	buf := bytes.NewBuffer(responseBody)
-
-	var e struct {
-		E Error `json:"error"`
-	}
-	err = json.NewDecoder(buf).Decode(&e)
-	if err != nil {
-		return Error{
-			Message: fmt.Sprintf("failed to decode error response %q", responseBody),
-			Status:  resp.StatusCode,
+		e.E = Error{}
+		err = json.NewDecoder(buf).Decode(&e)
+		if err != nil {
+			e.E.Message = fmt.Sprintf("failed to decode error response %q", responseBody)
 		}
 	}
 
@@ -240,39 +233,76 @@ func (c *Client) execute(req *http.Request, result interface{}, needsStatus ...i
 	if c.acceptLanguage != "" {
 		req.Header.Set("Accept-Language", c.acceptLanguage)
 	}
-	for {
+	for attempt := 0; ; attempt++ {
+		if attempt > 0 {
+			if err := rewindBody(req); err != nil {
+				return err
+			}
+		}
+
 		resp, err := c.http.Do(req)
 		if err != nil {
 			return err
 		}
-		defer resp.Body.Close()
 
+		// A request whose body cannot be rewound is never retried: resending
+		// it would send an empty body, so the caller gets Spotify's original
+		// error (including RetryAfter) instead.
 		if c.autoRetry &&
 			isFailure(resp.StatusCode, needsStatus) &&
-			shouldRetry(resp.StatusCode) {
+			shouldRetry(resp.StatusCode) &&
+			isRewindable(req) {
 			select {
 			case <-req.Context().Done():
 				// If the context is cancelled, return the original error
 			case <-time.After(retryDuration(resp)):
+				_ = resp.Body.Close()
 				continue
 			}
 		}
-		if resp.StatusCode == http.StatusNoContent {
-			return nil
-		}
-		if (resp.StatusCode >= 300 ||
-			resp.StatusCode < 200) &&
-			isFailure(resp.StatusCode, needsStatus) {
-			return decodeError(resp)
-		}
 
-		if result != nil {
-			if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
-				return err
-			}
-		}
-		break
+		err = decodeResponse(resp, result, needsStatus)
+		_ = resp.Body.Close()
+		return err
 	}
+}
+
+// decodeResponse turns resp into an error or decodes its JSON body into
+// result (when result is non-nil).
+func decodeResponse(resp *http.Response, result interface{}, needsStatus []int) error {
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if (resp.StatusCode >= 300 ||
+		resp.StatusCode < 200) &&
+		isFailure(resp.StatusCode, needsStatus) {
+		return decodeError(resp)
+	}
+	if result != nil {
+		return json.NewDecoder(resp.Body).Decode(result)
+	}
+	return nil
+}
+
+// isRewindable reports whether req can be sent again: either it has no body,
+// or http.NewRequest built it from an in-memory reader and recorded how to
+// recreate the body.
+func isRewindable(req *http.Request) bool {
+	return req.Body == nil || req.Body == http.NoBody || req.GetBody != nil
+}
+
+// rewindBody resets req.Body so the request can be sent again. Without this,
+// a retried request would be sent with an empty body. Only call it when
+// [isRewindable] reports true.
+func rewindBody(req *http.Request) error {
+	if req.Body == nil || req.Body == http.NoBody {
+		return nil
+	}
+	body, err := req.GetBody()
+	if err != nil {
+		return fmt.Errorf("spotify: rewinding request body: %w", err)
+	}
+	req.Body = body
 	return nil
 }
 
@@ -291,40 +321,50 @@ func retryDuration(resp *http.Response) time.Duration {
 func (c *Client) get(ctx context.Context, url string, result interface{}) error {
 	for {
 		req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
-		if c.acceptLanguage != "" {
-			req.Header.Set("Accept-Language", c.acceptLanguage)
-		}
 		if err != nil {
 			return err
+		}
+		if c.acceptLanguage != "" {
+			req.Header.Set("Accept-Language", c.acceptLanguage)
 		}
 		resp, err := c.http.Do(req)
 		if err != nil {
 			return err
 		}
 
-		defer resp.Body.Close()
-
 		if resp.StatusCode == http.StatusTooManyRequests && c.autoRetry {
 			select {
 			case <-ctx.Done():
 				// If the context is cancelled, return the original error
 			case <-time.After(retryDuration(resp)):
+				_ = resp.Body.Close()
 				continue
 			}
 		}
-		if resp.StatusCode == http.StatusNoContent {
-			return nil
-		}
-		if resp.StatusCode != http.StatusOK {
-			return decodeError(resp)
-		}
 
-		return json.NewDecoder(resp.Body).Decode(result)
+		err = decodeGetResponse(resp, result)
+		_ = resp.Body.Close()
+		return err
 	}
+}
+
+// decodeGetResponse turns the response to a GET request into an error or
+// decodes its JSON body into result.
+func decodeGetResponse(resp *http.Response, result interface{}) error {
+	if resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return decodeError(resp)
+	}
+
+	return json.NewDecoder(resp.Body).Decode(result)
 }
 
 // NewReleases gets a list of new album releases featured in Spotify.
 // Supported options: Country, Limit, Offset
+//
+// Deprecated: The Spotify endpoint is deprecated.
 func (c *Client) NewReleases(ctx context.Context, opts ...RequestOption) (albums *SimpleAlbumPage, err error) {
 	spotifyURL := c.baseURL + "browse/new-releases"
 	if params := processOptions(opts...).urlParams.Encode(); params != "" {

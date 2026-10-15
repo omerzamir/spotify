@@ -2,6 +2,7 @@ package spotify
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -113,6 +114,38 @@ type PlaylistTrack struct {
 	Track FullTrack `json:"track"`
 }
 
+// UnmarshalJSON decodes a playlist track. Since February 2026 Spotify returns
+// the track under "item" and keeps "track" as a deprecated alias; older
+// responses only have "track". "item" wins when it is present and not null;
+// "track" is then not decoded at all.
+func (t *PlaylistTrack) UnmarshalJSON(b []byte) error {
+	type playlistTrack PlaylistTrack // no methods, so no recursion
+
+	// Track and Item shadow the embedded playlistTrack.Track, see
+	// PlaylistItem.UnmarshalJSON.
+	var raw struct {
+		playlistTrack
+		Track json.RawMessage `json:"track"`
+		Item  json.RawMessage `json:"item"`
+	}
+
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+
+	*t = PlaylistTrack(raw.playlistTrack)
+	t.Track = FullTrack{}
+
+	switch {
+	case hasJSONValue(raw.Item):
+		return json.Unmarshal(raw.Item, &t.Track)
+	case hasJSONValue(raw.Track):
+		return json.Unmarshal(raw.Track, &t.Track)
+	}
+
+	return nil
+}
+
 // SavedTrack provides info about a track saved to a user's account.
 type SavedTrack struct {
 	// The date and time the track was saved, represented as an ISO 8601 UTC
@@ -158,6 +191,8 @@ func (c *Client) GetTrack(ctx context.Context, id ID, opts ...RequestOption) (*F
 // tracks in the result.
 //
 // Supported options: [Market].
+//
+// Deprecated: The Spotify endpoint is deprecated.
 //
 // [multiple tracks]: https://developer.spotify.com/documentation/web-api/reference/get-several-tracks
 func (c *Client) GetTracks(ctx context.Context, ids []ID, opts ...RequestOption) ([]*FullTrack, error) {

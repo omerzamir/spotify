@@ -191,7 +191,7 @@ func (a Authenticator) Exchange(ctx context.Context, code string, opts ...oauth2
 }
 
 // Client creates a [net/http.Client] that will use the specified access token
-// for its API requests. You will typically pass this to [github.com/zmb3/spotify.New].
+// for its API requests. You will typically pass this to [github.com/omerzamir/spotify/v2.New].
 func (a Authenticator) Client(ctx context.Context, token *oauth2.Token) *http.Client {
 	return a.config.Client(ctx, token)
 }

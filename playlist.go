@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -60,6 +61,8 @@ type FullPlaylist struct {
 //
 // Supported options: [Locale], [Country], [Timestamp], [Limit], [Offset].
 //
+// Deprecated: The Spotify endpoint is deprecated.
+//
 // [list of playlists featured by Spotify]: https://developer.spotify.com/documentation/web-api/reference/get-featured-playlists
 func (c *Client) FeaturedPlaylists(ctx context.Context, opts ...RequestOption) (message string, playlists *SimplePlaylistPage, e error) {
 	spotifyURL := c.baseURL + "browse/featured-playlists"
@@ -89,6 +92,9 @@ func (c *Client) FeaturedPlaylists(ctx context.Context, opts ...RequestOption) (
 // must have granted the [ScopePlaylistModifyPrivate] scope.  The
 // [ScopePlaylistModifyPublic] scope is required to follow playlists publicly.
 //
+// Deprecated: Use [Client.AddItemsToLibrary] with a spotify:playlist:<id> URI.
+// The replacement has no public/private flag, so the public argument has no equivalent.
+//
 // [adds the current user as a follower]: https://developer.spotify.com/documentation/web-api/reference/follow-playlist
 func (c *Client) FollowPlaylist(ctx context.Context, playlist ID, public bool) error {
 	spotifyURL := buildFollowURI(c.baseURL, playlist)
@@ -104,6 +110,8 @@ func (c *Client) FollowPlaylist(ctx context.Context, playlist ID, public bool) e
 // UnfollowPlaylist [removes the current user as a follower of a playlist].
 // Unfollowing a publicly followed playlist requires [ScopePlaylistModifyPublic].
 // Unfolowing a privately followed playlist requies [ScopePlaylistModifyPrivate].
+//
+// Deprecated: Use [Client.RemoveItemsFromLibrary] with a spotify:playlist:<id> URI.
 //
 // [removes the current user as a follower of a playlist]: https://developer.spotify.com/documentation/web-api/reference/unfollow-playlist
 func (c *Client) UnfollowPlaylist(ctx context.Context, playlist ID) error {
@@ -132,6 +140,9 @@ func buildFollowURI(url string, playlist ID) string {
 //
 // Supported options: [Limit], [Offset].
 //
+// Deprecated: Use [Client.CurrentUsersPlaylists]. The replacement only lists the
+// current user's playlists, not those of arbitrary users.
+//
 // [gets a list of the playlists]: https://developer.spotify.com/documentation/web-api/reference/get-list-users-playlists
 func (c *Client) GetPlaylistsForUser(ctx context.Context, userID string, opts ...RequestOption) (*SimplePlaylistPage, error) {
 	spotifyURL := c.baseURL + "users/" + userID + "/playlists"
@@ -147,6 +158,85 @@ func (c *Client) GetPlaylistsForUser(ctx context.Context, userID string, opts ..
 	}
 
 	return &result, err
+}
+
+// UnmarshalJSON decodes a simplified playlist. Since February 2026 Spotify
+// returns the playlist's contents summary ({href,total}) under "items" instead
+// of "tracks"; it is exposed as Tracks either way, and "items" wins when both
+// are present.
+//
+// The simplePlaylist type is defined without methods, so decoding into it
+// cannot recurse. This relies on SimplePlaylist having no embedded types that
+// implement json.Unmarshaler; if one is ever added, its UnmarshalJSON would be
+// promoted and swallow the whole decode.
+func (p *SimplePlaylist) UnmarshalJSON(b []byte) error {
+	type simplePlaylist SimplePlaylist // no methods, so no recursion
+
+	var raw struct {
+		simplePlaylist
+		Items *PlaylistTracks `json:"items"`
+	}
+
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+
+	*p = SimplePlaylist(raw.simplePlaylist)
+	if raw.Items != nil {
+		p.Tracks = *raw.Items
+	}
+
+	return nil
+}
+
+// UnmarshalJSON decodes a full playlist. Since February 2026 Spotify returns
+// the playlist's contents under "items" instead of "tracks"; they are exposed
+// as Tracks either way, and "items" wins when both are present.
+//
+// The embedded SimplePlaylist has its own UnmarshalJSON, which would be
+// promoted to FullPlaylist and ignore the extra fields if the usual
+// alias-embedding trick were used here. Instead the document is decoded in
+// separate passes: once into the SimplePlaylist, then once into the
+// fields that only a full playlist has.
+func (p *FullPlaylist) UnmarshalJSON(b []byte) error {
+	var simple SimplePlaylist
+	if err := json.Unmarshal(b, &simple); err != nil {
+		return err
+	}
+
+	var extra struct {
+		Followers Followers       `json:"followers"`
+		Tracks    json.RawMessage `json:"tracks"`
+		Items     json.RawMessage `json:"items"`
+	}
+	if err := json.Unmarshal(b, &extra); err != nil {
+		return err
+	}
+
+	full := FullPlaylist{SimplePlaylist: simple, Followers: extra.Followers}
+
+	switch {
+	case hasJSONValue(extra.Items):
+		if err := json.Unmarshal(extra.Items, &full.Tracks); err != nil {
+			return err
+		}
+	case hasJSONValue(extra.Tracks):
+		if err := json.Unmarshal(extra.Tracks, &full.Tracks); err != nil {
+			return err
+		}
+	}
+
+	*p = full
+
+	return nil
+}
+
+// hasJSONValue reports whether raw holds a JSON value other than null, i.e.
+// whether the key was present in the document and carried a value.
+func hasJSONValue(raw json.RawMessage) bool {
+	trimmed := bytes.TrimSpace(raw)
+
+	return len(trimmed) > 0 && !bytes.Equal(trimmed, []byte("null"))
 }
 
 // GetPlaylist [fetches a playlist] from spotify.
@@ -175,8 +265,16 @@ func (c *Client) GetPlaylist(ctx context.Context, playlistID ID, opts ...Request
 //
 // Supported options: [Limit], [Offset], [Market], [Fields].
 //
-// Deprecated: the Spotify api is moving towards supporting both tracks and episodes. Use [GetPlaylistItems] which
-// supports these.
+// GetPlaylistTracks uses the legacy /playlists/{id}/tracks endpoint. Unlike
+// [Client.GetPlaylistItems], which uses /playlists/{id}/items, it can read
+// playlists the current user neither owns nor collaborates on, for as long
+// as Spotify keeps serving it to your app.
+//
+// Deprecated: Spotify removed this endpoint for Development Mode apps created
+// after February 2026 and is moving to items that may be tracks or episodes.
+// Use [Client.GetPlaylistItems]. That only works for playlists the current user
+// owns or collaborates on: there is no replacement endpoint for reading the
+// contents of other playlists.
 func (c *Client) GetPlaylistTracks(
 	ctx context.Context,
 	playlistID ID,
@@ -211,6 +309,40 @@ type PlaylistItem struct {
 	IsLocal bool `json:"is_local"`
 	// Information about the track.
 	Track PlaylistItemTrack `json:"track"`
+}
+
+// UnmarshalJSON decodes a playlist item. Since February 2026 Spotify returns
+// the content under "item" and keeps "track" as a deprecated alias; older
+// responses only have "track". The content is exposed as Track either way.
+// "item" wins when it is present and not null; "track" is then not decoded at
+// all, so a malformed or partial alias cannot fail the page.
+func (i *PlaylistItem) UnmarshalJSON(b []byte) error {
+	type playlistItem PlaylistItem // no methods, so no recursion
+
+	// Track and Item sit at the outer level so they shadow the embedded
+	// playlistItem.Track: encoding/json prefers the least nested field for a
+	// given key, which keeps the embedded one from decoding "track" itself.
+	var raw struct {
+		playlistItem
+		Track json.RawMessage `json:"track"`
+		Item  json.RawMessage `json:"item"`
+	}
+
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+
+	*i = PlaylistItem(raw.playlistItem)
+	i.Track = PlaylistItemTrack{}
+
+	switch {
+	case hasJSONValue(raw.Item):
+		return json.Unmarshal(raw.Item, &i.Track)
+	case hasJSONValue(raw.Track):
+		return json.Unmarshal(raw.Track, &i.Track)
+	}
+
+	return nil
 }
 
 // PlaylistItemTrack is a union type for both tracks and episodes. If both
@@ -258,12 +390,15 @@ type PlaylistItemPage struct {
 // GetPlaylistItems [gets full details of the items in a playlist], given the
 // playlist's [Spotify ID].
 //
+// Spotify only returns the items of playlists the current user owns or
+// collaborates on; other playlists fail with 403 Forbidden.
+//
 // Supported options: [Limit], [Offset], [Market], [Fields].
 //
-// [gets full details of the items in a playlist]: https://developer.spotify.com/documentation/web-api/reference/get-playlists-tracks
+// [gets full details of the items in a playlist]: https://developer.spotify.com/documentation/web-api/reference/get-playlists-items
 // [Spotify ID]: https://developer.spotify.com/documentation/web-api/#spotify-uris-and-ids
 func (c *Client) GetPlaylistItems(ctx context.Context, playlistID ID, opts ...RequestOption) (*PlaylistItemPage, error) {
-	spotifyURL := fmt.Sprintf("%splaylists/%s/tracks", c.baseURL, playlistID)
+	spotifyURL := fmt.Sprintf("%splaylists/%s/items", c.baseURL, playlistID)
 
 	// Add default as the first option so it gets override by url.Values#Set
 	opts = append([]RequestOption{AdditionalTypes(EpisodeAdditionalType, TrackAdditionalType)}, opts...)
@@ -292,9 +427,24 @@ func (c *Client) GetPlaylistItems(ctx context.Context, playlistID ID, opts ...Re
 //
 // On success, the newly created playlist is returned.
 //
+// Deprecated: Use [Client.CreatePlaylist].
+//
 // [creates a playlist]: https://developer.spotify.com/documentation/web-api/reference/create-playlist
 func (c *Client) CreatePlaylistForUser(ctx context.Context, userID, playlistName, description string, public bool, collaborative bool) (*FullPlaylist, error) {
 	spotifyURL := fmt.Sprintf("%susers/%s/playlists", c.baseURL, userID)
+	return c.createPlaylist(ctx, spotifyURL, playlistName, description, public, collaborative)
+}
+
+// CreatePlaylist creates a playlist for the current Spotify user.
+// The playlist will be empty until you add items to it.
+//
+// Creating a public playlist requires [ScopePlaylistModifyPublic]; creating a
+// private playlist requires [ScopePlaylistModifyPrivate].
+func (c *Client) CreatePlaylist(ctx context.Context, playlistName, description string, public bool, collaborative bool) (*FullPlaylist, error) {
+	return c.createPlaylist(ctx, c.baseURL+"me/playlists", playlistName, description, public, collaborative)
+}
+
+func (c *Client) createPlaylist(ctx context.Context, spotifyURL, playlistName, description string, public bool, collaborative bool) (*FullPlaylist, error) {
 	body := struct {
 		Name          string `json:"name"`
 		Public        bool   `json:"public"`
@@ -400,37 +550,24 @@ func (c *Client) modifyPlaylist(ctx context.Context, playlistID ID, newName, new
 // can be used to identify this version (the new version) of the playlist in
 // future requests.
 //
+// Deprecated: Use [Client.AddItemsToPlaylist].
+//
 // [adds one or more tracks to a user's playlist]: https://developer.spotify.com/documentation/web-api/reference/add-tracks-to-playlist
 func (c *Client) AddTracksToPlaylist(ctx context.Context, playlistID ID, trackIDs ...ID) (snapshotID string, err error) {
-	uris := make([]string, len(trackIDs))
+	uris := make([]URI, len(trackIDs))
 	for i, id := range trackIDs {
-		uris[i] = fmt.Sprintf("spotify:track:%s", id)
-	}
-	m := make(map[string]interface{})
-	m["uris"] = uris
-
-	spotifyURL := fmt.Sprintf("%splaylists/%s/tracks",
-		c.baseURL, string(playlistID))
-	body, err := json.Marshal(m)
-	if err != nil {
-		return "", err
-	}
-	req, err := http.NewRequestWithContext(ctx, "POST", spotifyURL, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	result := struct {
-		SnapshotID string `json:"snapshot_id"`
-	}{}
-
-	err = c.execute(req, &result, http.StatusCreated)
-	if err != nil {
-		return "", err
+		uris[i] = URI("spotify:track:" + string(id))
 	}
 
-	return result.SnapshotID, nil
+	spotifyURL := fmt.Sprintf("%splaylists/%s/tracks", c.baseURL, string(playlistID))
+	return sendPlaylistEdit(ctx, c, http.MethodPost, spotifyURL, playlistURIs{URIs: uris}, http.StatusCreated)
+}
+
+// AddItemsToPlaylist adds one or more items to a user's playlist. Track and
+// episode URIs are supported.
+func (c *Client) AddItemsToPlaylist(ctx context.Context, playlistID ID, items ...URI) (snapshotID string, err error) {
+	spotifyURL := fmt.Sprintf("%splaylists/%s/items", c.baseURL, string(playlistID))
+	return sendPlaylistEdit(ctx, c, http.MethodPost, spotifyURL, playlistURIs{URIs: nonNilURIs(items)}, http.StatusCreated)
 }
 
 // RemoveTracksFromPlaylist [removes one or more tracks from a user's playlist].
@@ -441,16 +578,25 @@ func (c *Client) AddTracksToPlaylist(ctx context.Context, playlistID ID, trackID
 // of the track will be removed.  If successful, the snapshot ID returned can be used to
 // identify the playlist version in future requests.
 //
+// Deprecated: Use [Client.RemoveItemsFromPlaylist].
+//
 // [removes one or more tracks from a user's playlist]: https://developer.spotify.com/documentation/web-api/reference/remove-tracks-playlist
 func (c *Client) RemoveTracksFromPlaylist(ctx context.Context, playlistID ID, trackIDs ...ID) (newSnapshotID string, err error) {
-	tracks := make([]struct {
-		URI string `json:"uri"`
-	}, len(trackIDs))
-
-	for i, u := range trackIDs {
-		tracks[i].URI = fmt.Sprintf("spotify:track:%s", u)
+	tracks := make([]TrackToRemove, len(trackIDs))
+	for i, id := range trackIDs {
+		tracks[i].URI = "spotify:track:" + string(id)
 	}
 	return c.removeTracksFromPlaylist(ctx, playlistID, tracks, "")
+}
+
+// RemoveItemsFromPlaylist removes one or more items from a user's playlist.
+// It returns an error without sending a request when items is empty.
+func (c *Client) RemoveItemsFromPlaylist(ctx context.Context, playlistID ID, items ...URI) (newSnapshotID string, err error) {
+	toRemove := make([]ItemToRemove, len(items))
+	for i, uri := range items {
+		toRemove[i].URI = string(uri)
+	}
+	return c.removeItemsFromPlaylist(ctx, playlistID, toRemove, "")
 }
 
 // TrackToRemove specifies a track to be removed from a playlist.
@@ -458,7 +604,7 @@ func (c *Client) RemoveTracksFromPlaylist(ctx context.Context, playlistID ID, tr
 // TrackToRemove is used with RemoveTracksFromPlaylistOpt.
 type TrackToRemove struct {
 	URI       string `json:"uri"`
-	Positions []int  `json:"positions"`
+	Positions []int  `json:"positions,omitempty"`
 }
 
 // NewTrackToRemove returns a [TrackToRemove] with the specified
@@ -466,6 +612,18 @@ type TrackToRemove struct {
 func NewTrackToRemove(trackID string, positions []int) TrackToRemove {
 	return TrackToRemove{
 		URI:       fmt.Sprintf("spotify:track:%s", trackID),
+		Positions: positions,
+	}
+}
+
+// ItemToRemove specifies an item to be removed from a playlist.
+type ItemToRemove = TrackToRemove
+
+// NewItemToRemove returns an [ItemToRemove] with the specified item URI and
+// playlist locations.
+func NewItemToRemove(uri URI, positions []int) ItemToRemove {
+	return ItemToRemove{
+		URI:       string(uri),
 		Positions: positions,
 	}
 }
@@ -482,6 +640,8 @@ func NewTrackToRemove(trackID string, positions []int) TrackToRemove {
 // specified position is not found, the entire request will fail and no edits
 // will take place. (Note: the snapshot is optional, pass the empty string if
 // you don't care about it.)
+//
+// Deprecated: Use [Client.RemoveItemsFromPlaylistOpt].
 func (c *Client) RemoveTracksFromPlaylistOpt(
 	ctx context.Context,
 	playlistID ID,
@@ -491,44 +651,104 @@ func (c *Client) RemoveTracksFromPlaylistOpt(
 	return c.removeTracksFromPlaylist(ctx, playlistID, tracks, snapshotID)
 }
 
+// RemoveItemsFromPlaylistOpt is like [RemoveItemsFromPlaylist], but it supports
+// optional parameters that offer more fine-grained control.
+func (c *Client) RemoveItemsFromPlaylistOpt(
+	ctx context.Context,
+	playlistID ID,
+	items []ItemToRemove,
+	snapshotID string,
+) (newSnapshotID string, err error) {
+	return c.removeItemsFromPlaylist(ctx, playlistID, items, snapshotID)
+}
+
 func (c *Client) removeTracksFromPlaylist(
 	ctx context.Context,
 	playlistID ID,
-	tracks interface{},
+	tracks []TrackToRemove,
 	snapshotID string,
 ) (newSnapshotID string, err error) {
-	m := make(map[string]interface{})
-	m["tracks"] = tracks
-	if snapshotID != "" {
-		m["snapshot_id"] = snapshotID
+	if len(tracks) == 0 {
+		return "", errors.New("spotify: no tracks to remove")
 	}
 
-	spotifyURL := fmt.Sprintf("%splaylists/%s/tracks",
-		c.baseURL, string(playlistID))
-	body, err := json.Marshal(m)
+	spotifyURL := fmt.Sprintf("%splaylists/%s/tracks", c.baseURL, string(playlistID))
+	return sendPlaylistEdit(ctx, c, http.MethodDelete, spotifyURL, playlistRemoval{Tracks: tracks, SnapshotID: snapshotID})
+}
+
+func (c *Client) removeItemsFromPlaylist(
+	ctx context.Context,
+	playlistID ID,
+	items []ItemToRemove,
+	snapshotID string,
+) (newSnapshotID string, err error) {
+	if len(items) == 0 {
+		return "", errors.New("spotify: no items to remove")
+	}
+
+	spotifyURL := fmt.Sprintf("%splaylists/%s/items", c.baseURL, string(playlistID))
+	return sendPlaylistEdit(ctx, c, http.MethodDelete, spotifyURL, playlistRemoval{Items: items, SnapshotID: snapshotID})
+}
+
+// playlistSnapshot is the response body of endpoints that modify a playlist.
+type playlistSnapshot struct {
+	SnapshotID string `json:"snapshot_id"`
+}
+
+// playlistURIs is the request body of endpoints that take a list of URIs.
+type playlistURIs struct {
+	URIs []URI `json:"uris"`
+}
+
+// nonNilURIs returns uris, or an empty non-nil slice when uris is nil, so that
+// it is encoded as [] rather than null.
+func nonNilURIs(uris []URI) []URI {
+	if uris == nil {
+		return []URI{}
+	}
+
+	return uris
+}
+
+// playlistRemoval is the request body of the remove endpoints. The legacy
+// /tracks endpoint names the list "tracks"; the /items endpoint names it
+// "items".
+type playlistRemoval struct {
+	Tracks     []TrackToRemove `json:"tracks,omitempty"`
+	Items      []ItemToRemove  `json:"items,omitempty"`
+	SnapshotID string          `json:"snapshot_id,omitempty"`
+}
+
+// sendPlaylistEdit sends body as JSON to a playlist endpoint and returns the
+// playlist's new snapshot ID.
+func sendPlaylistEdit[B playlistURIs | playlistRemoval](
+	ctx context.Context,
+	c *Client,
+	method, spotifyURL string,
+	body B,
+	needsStatus ...int,
+) (string, error) {
+	bodyJSON, err := json.Marshal(body)
 	if err != nil {
 		return "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, "DELETE", spotifyURL, bytes.NewReader(body))
+
+	req, err := http.NewRequestWithContext(ctx, method, spotifyURL, bytes.NewReader(bodyJSON))
 	if err != nil {
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	result := struct {
-		SnapshotID string `json:"snapshot_id"`
-	}{}
-
-	err = c.execute(req, &result)
-	if err != nil {
+	var result playlistSnapshot
+	if err := c.execute(req, &result, needsStatus...); err != nil {
 		return "", err
 	}
 
-	return result.SnapshotID, err
+	return result.SnapshotID, nil
 }
 
 // ReplacePlaylistTracks [replaces all of the tracks in a playlist], overwriting its
-// existing tracks  This can be useful for replacing or reordering tracks, or for
+// existing tracks.  This can be useful for replacing or reordering tracks, or for
 // clearing a playlist.
 //
 // Modifying a public playlist requires that the user has authorized the
@@ -537,6 +757,8 @@ func (c *Client) removeTracksFromPlaylist(
 //
 // A maximum of 100 tracks are permitted in this call.  Additional tracks must be
 // added via [AddTracksToPlaylist].
+//
+// Deprecated: Use [Client.ReplacePlaylistItems].
 //
 // [replaces all of the tracks in a playlist]: https://developer.spotify.com/documentation/web-api/reference/reorder-or-replace-playlists-tracks
 func (c *Client) ReplacePlaylistTracks(ctx context.Context, playlistID ID, trackIDs ...ID) error {
@@ -554,43 +776,20 @@ func (c *Client) ReplacePlaylistTracks(ctx context.Context, playlistID ID, track
 }
 
 // ReplacePlaylistItems [replaces all the items in a playlist], overwriting its
-// existing tracks  This can be useful for replacing or reordering tracks, or for
+// existing items.  This can be useful for replacing or reordering items, or for
 // clearing a playlist.
 //
 // Modifying a public playlist requires that the user has authorized the
 // [ScopePlaylistModifyPublic] scope.  Modifying a private playlist requires the
 // [ScopePlaylistModifyPrivate] scope.
 //
-// A maximum of 100 tracks is permited in this call.  Additional tracks must be
-// added via AddTracksToPlaylist.
+// A maximum of 100 items is permitted in this call.  Additional items must be
+// added via [AddItemsToPlaylist]. Calling it without items clears the playlist.
 //
-// [replaces all the items in a playlist]: https://developer.spotify.com/documentation/web-api/reference/reorder-or-replace-playlists-tracks
+// [replaces all the items in a playlist]: https://developer.spotify.com/documentation/web-api/reference/reorder-or-replace-playlists-items
 func (c *Client) ReplacePlaylistItems(ctx context.Context, playlistID ID, items ...URI) (string, error) {
-	m := make(map[string]interface{})
-	m["uris"] = items
-
-	body, err := json.Marshal(m)
-	if err != nil {
-		return "", err
-	}
-
-	spotifyURL := fmt.Sprintf("%splaylists/%s/tracks", c.baseURL, playlistID)
-	req, err := http.NewRequestWithContext(ctx, "PUT", spotifyURL, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	result := struct {
-		SnapshotID string `json:"snapshot_id"`
-	}{}
-
-	err = c.execute(req, &result, http.StatusCreated)
-	if err != nil {
-		return "", err
-	}
-
-	return result.SnapshotID, nil
+	spotifyURL := fmt.Sprintf("%splaylists/%s/items", c.baseURL, playlistID)
+	return sendPlaylistEdit(ctx, c, http.MethodPut, spotifyURL, playlistURIs{URIs: nonNilURIs(items)}, http.StatusCreated)
 }
 
 // UserFollowsPlaylist [checks if one or more (up to 5) users are following]
@@ -599,6 +798,9 @@ func (c *Client) ReplacePlaylistItems(ctx context.Context, playlistID ID, items 
 // Checking if a user follows a playlist publicly doesn't require any scopes.
 // Checking if the user is privately following a playlist is only possible for the
 // current user when that user has granted access to the [ScopePlaylistReadPrivate] scope.
+//
+// Deprecated: Use [Client.UserHasLibraryItems] with a spotify:playlist:<id> URI.
+// The replacement only checks the current user, not arbitrary users.
 //
 // [checks if one or more (up to 5) users are following]: https://developer.spotify.com/documentation/web-api/reference/check-if-user-follows-playlist
 func (c *Client) UserFollowsPlaylist(ctx context.Context, playlistID ID, userIDs ...string) ([]bool, error) {
@@ -652,8 +854,25 @@ type PlaylistReorderOptions struct {
 // Reordering tracks in the current user's public playlist requires [ScopePlaylistModifyPublic].
 // Reordering tracks in the user's private playlists (including collaborative playlists) requires
 // [ScopePlaylistModifyPrivate].
+//
+// ReorderPlaylistTracks uses the legacy /playlists/{id}/tracks endpoint.
+//
+// Deprecated: Use [Client.ReorderPlaylistItems].
 func (c *Client) ReorderPlaylistTracks(ctx context.Context, playlistID ID, opt PlaylistReorderOptions) (snapshotID string, err error) {
-	spotifyURL := fmt.Sprintf("%splaylists/%s/tracks", c.baseURL, playlistID)
+	return c.reorderPlaylist(ctx, playlistID, "tracks", opt)
+}
+
+// ReorderPlaylistItems reorders an item or group of items in a playlist.  It
+// returns a snapshot ID that can be used to identify the (newly modified)
+// playlist version in future requests.
+func (c *Client) ReorderPlaylistItems(ctx context.Context, playlistID ID, opt PlaylistReorderOptions) (snapshotID string, err error) {
+	return c.reorderPlaylist(ctx, playlistID, "items", opt)
+}
+
+// reorderPlaylist sends opt to playlists/{id}/{endpoint}, where endpoint is
+// "items" or the legacy "tracks".
+func (c *Client) reorderPlaylist(ctx context.Context, playlistID ID, endpoint string, opt PlaylistReorderOptions) (string, error) {
+	spotifyURL := fmt.Sprintf("%splaylists/%s/%s", c.baseURL, playlistID, endpoint)
 	j, err := json.Marshal(opt)
 	if err != nil {
 		return "", err
@@ -664,11 +883,8 @@ func (c *Client) ReorderPlaylistTracks(ctx context.Context, playlistID ID, opt P
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	result := struct {
-		SnapshotID string `json:"snapshot_id"`
-	}{}
-	err = c.execute(req, &result)
-	if err != nil {
+	var result playlistSnapshot
+	if err := c.execute(req, &result); err != nil {
 		return "", err
 	}
 
