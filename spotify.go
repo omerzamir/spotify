@@ -252,13 +252,13 @@ func (c *Client) execute(req *http.Request, result interface{}, needsStatus ...i
 			case <-req.Context().Done():
 				// If the context is cancelled, return the original error
 			case <-time.After(retryDuration(resp)):
-				resp.Body.Close()
+				_ = resp.Body.Close()
 				continue
 			}
 		}
 
 		err = decodeResponse(resp, result, needsStatus)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		return err
 	}
 }
